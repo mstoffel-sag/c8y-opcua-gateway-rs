@@ -1,0 +1,10 @@
+c8y-opcua-gateway-rs
+Copyright 2026 Cumulocity GmbH
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes third-party software:
+
+  async-opcua (async-opcua-client) — Mozilla Public License 2.0 (MPL-2.0)
+  https://github.com/FreeOpcUa/async-opcua
+  Source for the MPL-2.0 covered files is available at the URL above.
