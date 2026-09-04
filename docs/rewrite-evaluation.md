@@ -383,3 +383,64 @@ OPC UA UI builds `browsePath` arrays from a scanned tree. A tenant whose only ga
 can consume device types but cannot conveniently author new ones. Either accept that authoring
 happens against a Java gateway or by hand, or treat UI support for scan-free authoring as separate
 product work.
+
+---
+
+# Revision 3, 2026-09-04: stateless gateway, two first-class mapping sources
+
+Two decisions, both narrowing.
+
+## The gateway writes nothing to disk
+
+No device-type cache, no offline buffer, no resolved-NodeId store, no local database. Readings go
+straight to MQTT; mosquitto's persistent queue and the thin-edge bridge own store-and-forward.
+Fetched device types, resolved NodeIds and subscription state live in memory and are rebuilt on
+restart.
+
+This supersedes the disk cache proposed in Revision 2. The only files the gateway touches are
+read-only inputs: its own configuration, mapping files, and OPC UA certificates.
+
+**What it costs:** a cold start with no cloud connectivity, in a proxy-only deployment, comes up
+unmapped. The gateway connects to its servers, registers its entities, publishes health and waits
+for the proxy — it does not exit, and it does not degrade into a half-mapped state. That is the
+accepted trade, and the pushed-config source below is the mitigation for deployments where it
+matters.
+
+**What it buys:** no cache invalidation, no schema versioning for persisted data, no corrupt-state
+recovery path, no writable directory to provision or permission, no disk wear on flash-backed edge
+hardware. It also removes the last reason to pick a local key-value store, so `redb`, Kryo-style
+serialisation and every question they carry drop out of the design entirely.
+
+## Both mapping sources are first-class
+
+Confirmed as a deliberate pair rather than a primary and a fallback:
+
+| | Pull | Push |
+|---|---|---|
+| Source | `c8y_OpcuaDeviceType` managed objects via the thin-edge Cumulocity proxy | mapping files in `/etc/tedge/opcua/`, delivered by `tedge-configuration-management` |
+| Authoring | existing OPC UA UI | configuration repository, versioned |
+| Propagation | polled, within one interval | pushed on change |
+| Needs cloud at boot | yes | no |
+| Cloud-agnostic | no — Cumulocity data model | yes — works behind any thin-edge bridge |
+
+They cover each other's weaknesses exactly. Pull gives compatibility and a migration path for
+tenants with existing device types; push gives versioned, reviewable configuration, boots without
+connectivity, and keeps the component usable behind a non-Cumulocity bridge. Pushed files win on
+conflict, and the gateway watches the directory so configuration-management updates apply without
+a restart.
+
+Both deserialise into one internal `ResolvedMapping`; nothing downstream knows which source
+produced it. This is the one place in the design where a trait with two implementations is
+justified up front rather than speculative.
+
+## Effect on effort
+
+Neutral to slightly negative. Dropping persistence removes work from phases 1 and 3; adding a
+file watcher and a second deserialiser to phase 2 adds a little back. The estimate stays at
+**≈ 3.5–4.5 months**.
+
+## Unchanged
+
+`async-opcua` is MPL-2.0 and still needs third-party compliance clearance before code is written
+against it. Authoring *new* device types still wants a scanned address space somewhere, so a
+tenant whose only gateway is this one can consume device types but not conveniently author them.

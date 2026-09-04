@@ -91,11 +91,13 @@ status transitions.
 - **HTTP client is `reqwest`** with `rustls`, plain HTTP to localhost, no auth header.
 - **The data path never uses HTTP.** Readings go over MQTT so that mosquitto and the bridge own
   buffering. The proxy is for device-type fetch only — read-only, roughly one request per minute.
-- **No local persistence, no offline buffer.** mosquitto's persistent queue and the thin-edge
-  bridge own store-and-forward. Do not reimplement it. Resolved NodeIds live in memory and are
-  re-resolved on reconnect — one `TranslateBrowsePathsToNodeIds` call, not a cache to invalidate.
-  The last successfully fetched device-type set may be cached on disk so a restart during a cloud
-  outage still comes up mapped; that is the only thing worth persisting.
+- **The gateway is stateless. It writes nothing to disk.** No offline buffer, no device-type
+  cache, no resolved-NodeId store, no local database. mosquitto's persistent queue and the
+  thin-edge bridge own store-and-forward; do not reimplement it. Everything else — fetched device
+  types, resolved NodeIds, subscription state — lives in memory and is rebuilt on restart:
+  re-fetch, then one `TranslateBrowsePathsToNodeIds` call per server.
+  The only files the gateway touches are read-only inputs: its own config, the mapping TOML in
+  `/etc/tedge/opcua/`, and OPC UA certificates.
 - **Batch locally anyway.** Publishing every data change as its own MQTT message will drown the
   local broker and the mapper on a fast server. Port the *intent* of the Java
   `BaseQueuedRepository` / `FlushExecutor`: bounded queues, flush on size or interval, group
@@ -143,17 +145,23 @@ isolation layer and its enforcer rule are gone.
 
 ## 4. Mapping sources
 
-Two sources, one internal model. Both must produce the same `ResolvedMapping` type; nothing
-downstream of `mapping` knows which one was used.
+Two sources, one internal model. Both produce the same `ResolvedMapping` type; nothing downstream
+of `mapping` knows which one was used. **Both are first-class — neither is a fallback for the
+other.**
 
-1. **Device types fetched from Cumulocity inventory through the thin-edge proxy** (Section 5).
-   This is the compatibility path: device types authored in the existing OPC UA UI work unchanged.
-2. **Local TOML files** under `/etc/tedge/opcua/`, managed by thin-edge configuration management
-   (which already exposes device files in the Cumulocity configuration repository UI). This is the
-   cloud-agnostic path — it works behind any thin-edge bridge, not just the Cumulocity one.
+1. **Pull — device types fetched from Cumulocity inventory through the thin-edge proxy**
+   (Section 5). The compatibility path: `c8y_OpcuaDeviceType` managed objects authored in the
+   existing OPC UA UI work unchanged, and changes reach the device within a poll interval.
+2. **Push — mapping files delivered to the device by thin-edge configuration management**, read
+   from `/etc/tedge/opcua/`. `tedge-configuration-management` already surfaces device files in the
+   Cumulocity configuration repository UI, so mappings stay remotely manageable — as versioned
+   config, pushed on change, rather than polled. This path works behind any thin-edge bridge, not
+   just the Cumulocity one, and it is the one that survives a cold start with no cloud
+   connectivity.
 
-Either may be enabled alone or both together; local files win on conflict. Do not build a third
-distribution mechanism.
+Either may be enabled alone or both together; pushed files win on conflict. Watch
+`/etc/tedge/opcua/` for changes and reload without a restart — configuration management updates
+the files in place. Do not build a third distribution mechanism.
 
 ---
 
@@ -188,9 +196,15 @@ total count drops, which is how deletions are detected. Port that logic from
 - The proxy is documented to occasionally return a spurious `401` from Cumulocity's JWT handling
   and to forward it verbatim. **Retry a 401 once after a short backoff** before treating it as an
   error. Do not treat it as a credential problem — there are no credentials.
-- `502` means the mapper cannot reach Cumulocity. Keep running on the last known device types and
-  retry with backoff; a cloud outage must not stop OPC UA collection.
-- A missing or unreachable proxy is not fatal when local-file mappings are configured.
+- `502` means the mapper cannot reach Cumulocity. Keep running on the device types already in
+  memory and retry with backoff — a cloud outage must never stop OPC UA collection or MQTT
+  publishing.
+- A missing or unreachable proxy is never fatal. Retry with backoff, publish health as `up`, and
+  log at most one warning per backoff step.
+- **A cold start with no proxy comes up unmapped**, because nothing is cached. The gateway
+  connects to its servers, publishes its entity registrations and health, and waits — it does not
+  exit. This is the accepted cost of statelessness; pushed mapping files
+  (Section 4) are the answer for deployments that must boot mapped without connectivity.
 
 ### Constraint compatibility
 
@@ -370,6 +384,8 @@ Inherited from `c8y-opcua`:
   to the thin-edge proxy on localhost. See [Section 3.1](#31-no-cloud-client-of-our-own).
 - **Don't send readings over the proxy.** The data path is MQTT so thin-edge owns buffering. The
   proxy is read-only device-type fetch.
+- **Don't write to disk.** No cache, no database, no spool directory, no state file. If something
+  seems to need persisting, it either belongs in a pushed config file or does not belong here.
 - **Don't add address space scanning**, browsing-for-discovery, or an address-space cache. See
   [Section 3.2](#32-no-address-space-scanning).
 - **Don't use the legacy `tedge/` topics.** Removed in thin-edge 2.0.

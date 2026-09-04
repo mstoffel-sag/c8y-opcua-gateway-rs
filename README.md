@@ -11,9 +11,13 @@ mapper and bridge carry the data to the cloud.
 over read-only HTTP to the thin-edge Cumulocity proxy at `127.0.0.1:8001/c8y/...`, which injects
 the device's JWT. No bootstrap, no Cumulocity SDK, no operations polling, no inventory writes.
 
-**Compatible with existing device types.** `c8y_OpcuaDeviceType` managed objects authored in the
-OPC UA UI are fetched through the proxy and used as-is. Local TOML mappings are also supported for
-deployments behind a non-Cumulocity bridge.
+**Two ways to get mappings, both first-class.** Pull `c8y_OpcuaDeviceType` managed objects through
+the proxy, so device types authored in the OPC UA UI work as-is; or push mapping files to the
+device with thin-edge configuration management, which needs no cloud connectivity at boot and
+works behind any thin-edge bridge.
+
+**Stateless.** The gateway writes nothing to disk — no cache, no buffer, no database. Readings go
+straight to MQTT and mosquitto owns store-and-forward.
 
 **No address space scanning.** Nodes are addressed by NodeId, or by browse path resolved against a
 device type's `referencedRootNodeId` via `TranslateBrowsePathsToNodeIds`. Only regex browse paths
