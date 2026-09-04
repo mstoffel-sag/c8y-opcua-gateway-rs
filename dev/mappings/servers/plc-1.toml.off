@@ -1,0 +1,9 @@
+# One OPC UA server, delivered the way thin-edge configuration management would deliver it.
+# Nothing about this server exists in Cumulocity.
+id = "plc-1"
+name = "opcua-pump01"
+url = "opc.tcp://127.0.0.1:4840"
+security_policy = "None"
+
+# Empty accepts every applicable device type; list ids here to scope this server.
+device_types = []

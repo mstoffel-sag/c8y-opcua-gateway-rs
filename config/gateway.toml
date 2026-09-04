@@ -1,0 +1,150 @@
+# c8y-opcua-gateway configuration.
+#
+# Precedence: this file, then environment variables (`OPCUA_GW__<SECTION>__<KEY>`, nested with
+# `__`), then CLI flags. Everything is validated once at startup.
+
+[runtime]
+# Tokio worker threads. This workload is I/O bound; keep it low on edge hardware.
+worker_threads = 2
+connect_timeout_secs = 30
+max_backoff_secs = 60
+
+[mqtt]
+# The local thin-edge broker. mosquitto and the thin-edge bridge own store-and-forward.
+host = "127.0.0.1"
+port = 1883
+client_id = "c8y-opcua-gateway"
+# Service name of the gateway on the thin-edge main device.
+service_name = "opcua-gateway"
+capacity = 1024
+keep_alive_secs = 60
+
+[proxy]
+# Pull mapping source: device types fetched from Cumulocity inventory through the thin-edge
+# Cumulocity proxy, which injects the device's JWT. Read-only, no credentials here.
+enabled = true
+base_url = "http://127.0.0.1:8001/c8y"
+poll_interval_secs = 60
+timeout_secs = 30
+# Restrict the fetch to specific managed objects. Empty fetches every c8y_OpcuaDeviceType.
+device_type_ids = []
+# Only for a thin-edge deployment whose local endpoints require mTLS. Take the paths from
+# `tedge config get c8y.proxy.cert_path`, `…key_path` and `…ca_path`.
+# client_cert = "/etc/tedge/device-certs/local-tedge.crt"
+# client_key = "/etc/tedge/device-certs/local-tedge.key"
+# ca_cert = "/etc/step-ca/certs/root_ca.crt"
+
+[subscription]
+# The server's single OPC UA subscription, shared by every device type that asks for monitored
+# items. Defaults match the Java gateway's `gateway.subscription.*` properties.
+publishing_interval_ms = 100
+lifetime_count = 600
+max_keep_alive_count = 200
+max_notifications_per_publish = 500
+priority = 0
+# Monitored item queue size when a device type's subscriptionParameters do not set one.
+default_queue_size = 10
+# Bound on undelivered notifications. On overflow they are dropped with a rate-limited warning;
+# there is no unbounded queue and no offline buffer anywhere in this gateway.
+channel_capacity = 4096
+# Batched measurements are flushed at least this often, and immediately once flush_max_series
+# are waiting. Publishing every data change on its own would drown the broker and the mapper.
+flush_interval_ms = 1000
+flush_max_series = 200
+
+[gateway]
+# The Cumulocity gateway device.
+#
+# With this on, the gateway registers one more thin-edge child device of the main device, typed
+# `c8y_OPCUA_Device_Agent`, and parents every OPC UA server below it:
+#
+#   te/device/main//                     the thin-edge main device
+#   te/device/main/service/opcua-gateway this gateway, as a service
+#   te/device/opcua-gateway//            the gateway device        → c8y_OPCUA_Device_Agent
+#   te/device/<server>//                 one per server            → c8y_OpcuaServer
+#   te/device/<server>-<deviceTypeId>//  one per applied type      → c8y_OpcuaDevice
+#
+# That is the shape the existing OPC UA user interface recognises, so a server can be created in
+# the OPC UA tab of the gateway device and this gateway picks it up within
+# `server_poll_interval_secs` — a third server source alongside inline `[[servers]]` and pushed
+# server files. Servers configured on the device win on a shared id.
+#
+# It changes nothing about the data path: telemetry still goes out on `te/` topics.
+#
+# Turn it off for a purely thin-edge-native deployment: no gateway device, servers registered
+# directly below the main device, plain thin-edge entity types, and no Cumulocity server objects.
+# That is the only supported mode behind a non-Cumulocity bridge.
+enabled = true
+
+# Topic-id segment of the gateway device, and half of its external id
+# (`<device_id>:device:<id>`). It decides the gateway's identity in the cloud, so changing it on a
+# running deployment orphans the old managed object.
+id = "opcua-gateway-rs"
+
+# Display name, which becomes the managed object name.
+name = "OPC UA Gateway"
+
+# thin-edge device id — the device's own identity in Cumulocity, and the other half of every
+# external id derived here (`<device_id>:device:<id>`).
+#
+# It is not in [mqtt] because it is not an MQTT parameter: `client_id` is an arbitrary client name
+# and `service_name` names the service entity. Nor can it be discovered on localhost. thin-edge's
+# entity store returns `@id` only for entities that set one explicitly — a derived external id is
+# not exposed, and the main device carries none — and the Cumulocity proxy does not forward
+# `/user/currentUser`. Since finding the gateway's own managed object requires its external id,
+# and building that requires this value, there is nothing to bootstrap from.
+#
+# Empty reads it from `tedge config get device.id`, so on a device this stays empty. Set it
+# explicitly only when running off-device, where the thin-edge CLI is absent.
+device_id = ""
+
+# How often the gateway's own child devices are read back to find servers created in the user
+# interface. The Java gateway's `gateway.detectServersAddedOrRemoveInterval`.
+server_poll_interval_secs = 60
+
+# Reported as `c8y_SupportedOperations` on the gateway device, which is how the user interface
+# decides the device is an OPC UA gateway. Operations that arrive and are not implemented are
+# failed with a reason rather than left pending forever.
+supported_operations = ["c8y_OpcuaConfiguration"]
+
+[mappings]
+# The pushed-configuration directory that thin-edge configuration management writes into and this
+# gateway only reads. Two kinds of file live here:
+#
+#   <dir>/*.json           device types (push mapping source; wins over pulled ones on conflict)
+#   <dir>/servers/*.toml   one OPC UA server per file (see below)
+dir = "/etc/tedge/opcua"
+
+# One entry per OPC UA server.
+#
+# Each server becomes a thin-edge child device of the main device, and each device type applied to
+# it becomes a device below that server:
+#
+#   te/device/main/service/opcua-gateway        the gateway itself
+#   te/device/<server>//                        one per [[servers]] entry
+#   te/device/<server>-<deviceTypeId>//         one per applied device type; telemetry lands here
+#
+# The third level is not cosmetic. Two device types on one server would otherwise share every
+# telemetry topic: cyclic-read measurements arrive twice, subscribed series overwrite each other,
+# and their alarms collapse into one because Cumulocity dedupes alarms by source and type.
+#
+# Servers are configured on the device. They need no `c8y_OpcuaServer` managed object, and `id` is
+# a free-form local identifier, not a Cumulocity managed object id.
+#
+# The same fields can be delivered as `<mappings.dir>/servers/<id>.toml`, one server per file, so
+# servers are remotely manageable as versioned config through thin-edge configuration management —
+# behind any bridge, with nothing written to Cumulocity inventory. A pushed file overrides an
+# inline entry with the same `id`, the same way a pushed mapping overrides a pulled device type.
+[[servers]]
+id = "plc-1"
+# thin-edge child device topic id and display name.
+name = "opcua-pump01"
+url = "opc.tcp://127.0.0.1:4840"
+security_policy = "None"
+# user = "operator"
+# password = "…"
+# Device type ids allowed on this server; empty accepts every applicable device type. This is how
+# a device type is scoped to a server, because applyConstraints.matchesServerIds is authored in
+# Cumulocity and cannot name a local server id. A matchesServerIds that names no configured server
+# is reported and ignored rather than scoping the device type out of existence.
+device_types = []

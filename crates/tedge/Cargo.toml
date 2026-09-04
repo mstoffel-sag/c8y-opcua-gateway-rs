@@ -1,0 +1,19 @@
+[package]
+name = "tedge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+percent-encoding = { workspace = true }
+reqwest = { workspace = true, features = ["rustls-tls", "json", "http2", "charset"] }
+rumqttc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time", "macros"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,41 @@
+# Local development against the thin-edge demo container and the OPC UA demo server.
+#
+# Both mapping sources are on: device types are pulled from Cumulocity through the thin-edge proxy,
+# and dev/mappings/ is watched for pushed files. Delete dev/mappings/pump01.json to exercise the
+# pull source alone.
+#
+# Requires the demo to run with FEATURES=nopki, ports 1883 and 8001 published to the host, and
+# `tedge config set c8y.proxy.bind.address 0.0.0.0`.
+
+[runtime]
+worker_threads = 2
+
+[mqtt]
+host = "127.0.0.1"
+port = 1883
+client_id = "c8y-opcua-gateway-dev"
+service_name = "opcua-gateway"
+
+[proxy]
+enabled = true
+base_url = "http://127.0.0.1:8001/c8y"
+poll_interval_secs = 60
+
+[mappings]
+dir = "dev/mappings"
+
+# No [[servers]] here on purpose: the server comes from dev/mappings/servers/plc-1.toml, the same
+# path thin-edge configuration management would push it to.
+
+[gateway]
+# The Cumulocity gateway device. Servers can be created in the OPC UA tab of this device and are
+# picked up within server_poll_interval_secs.
+enabled = true
+# thin-edge cannot forget an entity, so a gateway object deleted in Cumulocity never comes back
+# under the same id. Bump this when that happens (see CLAUDE.md 3.4).
+id = "opcua-gateway-rs1"
+name = "OPC UA Gateway (rs)"
+# Set explicitly here because `tedge config get device.id` only exists on the device, and this
+# configuration runs on a developer machine against the demo container.
+device_id = "thinEdgeDemo"
+server_poll_interval_secs = 20

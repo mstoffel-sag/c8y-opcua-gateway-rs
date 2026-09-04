@@ -1,0 +1,29 @@
+[package]
+name = "c8y-opcua-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "c8y-opcua-gateway"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+mapping = { workspace = true }
+opcua-conn = { workspace = true }
+tedge = { workspace = true }
+
+anyhow = { workspace = true }
+async-opcua = { workspace = true, features = ["client"] }
+clap = { workspace = true }
+figment = { workspace = true, features = ["toml", "env"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter", "ansi"] }

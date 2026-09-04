@@ -1,0 +1,67 @@
+# child device templates
+x-child-agent: &child-container
+  image: ghcr.io/thin-edge/tedge-demo-child-container:${VERSION:-latest}
+  pull_policy: always
+  restart: always
+  tmpfs:
+    - /tmp
+  networks:
+    - tedge
+
+x-child-defaults: &child-device-systemd
+  image: ghcr.io/thin-edge/tedge-demo-child-systemd:${VERSION:-latest}
+  pull_policy: always
+  restart: always
+  privileged: true
+  networks:
+    - tedge
+
+# Services
+services:
+  tedge:
+    image: ghcr.io/thin-edge/tedge-demo-main-systemd:${VERSION:-latest}
+    pull_policy: always
+    volumes:
+      - main_etc:/etc
+    restart: always
+    privileged: true
+    environment:
+      - FEATURES=${FEATURES:-pki}
+      - PROVISION_PASSWORD=${PROVISION_PASSWORD:-dummy}
+    hostname: tedge
+    networks:
+      - tedge
+    ports:
+      - "1883:1883"  # Exposes the MQTT Broker
+      - "8001:8001"  # Exposes the Cumulocity IoT Proxy
+
+  # child devices
+  child01:
+    <<: *child-container
+    environment:
+      - FEATURES=${FEATURES:-pki}
+      - PROVISION_PASSWORD=${PROVISION_PASSWORD:-dummy}
+    hostname: child01
+    volumes:
+      - child01_etc:/etc
+      - child01_logs:/var/log/tedge
+
+  child02:
+    <<: *child-device-systemd
+    hostname: child02
+    environment:
+      - FEATURES=${FEATURES:-pki}
+      - PROVISION_PASSWORD=${PROVISION_PASSWORD:-dummy}
+    volumes:
+      - child02_etc:/etc
+      - child02_logs:/var/log/tedge
+
+volumes:
+  main_etc:
+  child01_etc:
+  child01_logs:
+  child02_etc:
+  child02_logs:
+
+networks:
+  tedge:

@@ -1,0 +1,14 @@
+[package]
+name = "opcua-conn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-opcua = { workspace = true, features = ["client"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time"] }
+tracing = { workspace = true }
