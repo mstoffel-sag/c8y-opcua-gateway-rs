@@ -149,3 +149,122 @@ Sequence before writing code:
    accept file-based configuration for the first release.
 3. Prototype phase 1 against a real customer server to smoke out `async-opcua` interop early,
    and measure RSS to confirm the footprint claim before committing to the full port.
+
+---
+
+# Revision, 2026-09-04: thin-edge-only scope
+
+The gateway will not integrate with Cumulocity at all. It publishes to the local thin-edge MQTT
+broker on `te/` topics and thin-edge carries the data to the cloud. This revises Sections 4, 5
+and 6 above substantially. Rust remains the chosen language.
+
+## What this removes
+
+The largest single line item in the original estimate — writing a Cumulocity client from scratch
+because no Rust SDK exists — disappears. So does most of what surrounded it:
+
+| Dropped | Java source |
+|---|---|
+| Cumulocity REST client and SDK usage | `platform/**` |
+| Device bootstrap and credentials polling | `bootstrap/**` |
+| Inventory managed objects, external IDs | `platform/repository/`, `identitiy/` |
+| Operations polling and ~30 handlers | `operation/**` |
+| Binaries / file upload | `platform/repository/BinariesRepository.java` |
+| Queued REST repositories, flush strategies, processing modes | `platform/repository/**` |
+| Offline buffering and local persistence | `datastore/**` |
+| JWT and the HTTP proxy path | `mqtt-jwt-lib`, `PlatformFactoryThinEdgeProxy` |
+| JMX monitoring beans | `jmx/**` |
+
+Each has a thin-edge equivalent that is already built, tested and maintained: entity registration
+and `twin/` topics for inventory, `cmd/` topics for operations, `status/health` for monitoring,
+mosquitto's persistent queue plus the bridge for store-and-forward, and `tedge cert` for identity.
+
+The crate layout drops from five to four — `c8y-client` and `store` are both gone.
+
+## Verified integration surface
+
+thin-edge.io **2.0.1** (2026-05-28), Apache-2.0, written in Rust, actively developed. Targeting
+2.x is right; the legacy `tedge/` topics were removed in 2.0.
+
+The Java gateway's `ThinEdge*Task` classes already publish to exactly the topics this design needs
+— `te/device/<id>///m/<type>`, `.../e/<type>`, `.../a/<type>` — so the payload contract is not
+speculative, it is running code we can port field for field, including the empty-retained-message
+alarm clear and the `${value}` substitution in event text.
+
+What the Java path does *not* use, and this design does:
+
+- **Entity registration** — retained `@type` / `@parent` messages, one child device per OPC UA
+  server. The Java ThinEdge path still created child devices over the REST inventory API.
+- **`status/health`** — replaces JMX.
+- **`cmd/` topics** — capability declared retained at startup, then the executor state machine
+  `init` → `executing` → `successful` | `failed`. This is how read/write/method-call operations
+  reach the gateway without any REST polling.
+
+`rumqttc` 0.25.1 is the client; thin-edge uses it too. The `tedge-*` crates are workspace-internal
+and unpublished, so there is no library to reuse — we speak MQTT like any other client, which is
+the documented integration path.
+
+## What the scope change costs
+
+**Mapping definitions have nowhere to come from.** The Java gateway reads device types as managed
+objects from Cumulocity inventory. With no inventory client, mappings become **local
+configuration files** under `/etc/tedge/opcua/`.
+
+This is less of a regression than it looks: thin-edge configuration management already exposes
+device files in the Cumulocity configuration repository UI for remote download and upload, so
+mappings stay remotely manageable without us building a distribution mechanism. But it is a
+different operational model from editing device types in the OPC UA UI, and it should be a
+conscious product decision rather than a side effect. Combined with dropping address space
+scanning, this gateway is fully configuration-driven — there is no discovery step at all.
+
+## What the scope change gains, beyond effort
+
+**Cloud independence.** Publishing only to `te/` topics means thin-edge 2.0's configurable bridges
+can route the data to Cumulocity or to any other MQTT cloud with no change here. The component
+stops being a Cumulocity OPC UA gateway and becomes an OPC UA source for thin-edge. That is worth
+weighing against the repository's current `c8y-` name.
+
+**Attack surface and operational simplicity.** One outbound socket besides OPC UA, to
+`localhost:1883`. No credentials to store, rotate, or leak. No certificate handling on the cloud
+side. Identity, TLS and reconnection to the cloud are thin-edge's problem.
+
+**Ecosystem fit.** thin-edge is Rust and Apache-2.0, with an established packaging story — musl
+static builds, deb/rpm, systemd units, riscv64 support. This project can follow it exactly rather
+than inventing a deployment model.
+
+## Revised effort
+
+| Phase | Scope | Estimate |
+|---|---|---|
+| 1 | Config model, connect, subscribe by NodeId, entity registration, health, measurements to `te/` | 3–4 weeks |
+| 2 | Events, alarms incl. retained clear, UA event subscriptions with `EventFilter`, cyclic read, reconnect, local batching | 4–6 weeks |
+| 3 | Browse-path resolution, alarm-status expression subset, `opcua_read` / `opcua_write` / `opcua_call_method` commands, security policies and certs, deb/rpm + systemd, CI | 4–6 weeks |
+
+**≈ 3–4 months**, down from 4–7. The reduction is real work removed, not optimism: roughly half
+the remaining Java gateway — everything under `platform/`, `bootstrap/`, `operation/`,
+`datastore/` and `jmx/` — has a thin-edge equivalent rather than a Rust port.
+
+## What has not changed
+
+**`async-opcua` is MPL-2.0 and that is still the blocking risk.** File-level copyleft, and it must
+clear third-party compliance before code is written against it. Scoping the gateway down to MQTT
+does not touch this. If compliance rejects MPL-2.0, the options are gopcua (MIT, but no OPC UA 1.04
+AES security policies) or paying for a commercial stack.
+
+Also unchanged: `async-opcua` is pre-1.0 with breaking minor releases and no MSRV, its docs are
+thin, and it carries no OPC Foundation certification. Pin the crate and the toolchain, and
+prototype phase 1 against a real customer server early to smoke out interop before committing.
+
+## Revised recommendation
+
+Proceed on Rust + `async-opcua` + thin-edge, subject to the MPL-2.0 clearance. The narrowed scope
+makes this a materially better proposition than the original: a ~3–4 month build of a focused,
+cloud-agnostic component, rather than a ~4–7 month reimplementation of a platform client that
+thin-edge already provides.
+
+Sequence before writing code:
+
+1. Clear MPL-2.0 through third-party compliance. Still blocking.
+2. Confirm the product decision on file-based, configuration-driven mappings delivered through
+   thin-edge configuration management.
+3. Prototype phase 1 against a real customer server, and measure RSS against the footprint claim.
