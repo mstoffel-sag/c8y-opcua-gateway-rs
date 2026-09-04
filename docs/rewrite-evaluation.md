@@ -268,3 +268,118 @@ Sequence before writing code:
 2. Confirm the product decision on file-based, configuration-driven mappings delivered through
    thin-edge configuration management.
 3. Prototype phase 1 against a real customer server, and measure RSS against the footprint claim.
+
+---
+
+# Revision 2, 2026-09-04: device types via the thin-edge Cumulocity proxy
+
+The previous revision assumed no HTTP to Cumulocity at all, which forced mappings to be local
+files only. The Java gateway's existing thin-edge **proxy mode** offers a better option, and it
+recovers compatibility with the existing device-type model at very low cost.
+
+## What proxy mode already does
+
+`PlatformFactoryThinEdgeProxy` — active when `gateway.thinEdge.enabled=true` **and**
+`gateway.thinEdge.useHttpProxy=true` — points the Cumulocity Java SDK at
+`http://localhost:8001/c8y` using `CumulocityAnonymousCredentials`, i.e. no authentication of its
+own. `tedge-mapper-c8y` injects the device's JWT.
+
+Verified against thin-edge's
+[Cumulocity proxy reference](https://thin-edge.github.io/thin-edge.io/references/cumulocity-proxy/):
+
+- Binds `127.0.0.1:8001` by default (`c8y.proxy.bind.address` / `c8y.proxy.bind.port`).
+- URL shape `http://{host}:{port}/c8y/{c8y-endpoint}`.
+- Injects device credentials; no `Authorization` header needed. A client-supplied header wins if
+  present.
+- Forwards **all public Cumulocity REST APIs and all methods**.
+- Documented failure modes: occasional spurious `401` from Cumulocity JWT handling, forwarded
+  verbatim, and `502` when the mapper cannot reach Cumulocity.
+
+So the full inventory API is reachable from the gateway with zero credential management.
+
+## What this buys
+
+**Device types work unchanged.** Fetch `c8y_OpcuaDeviceType` managed objects through the proxy and
+convert them to mappings. Device types authored in the existing OPC UA UI keep working, and the
+Java gateway's change-detection logic in `DeviceTypeFetcherService` — incremental fetch by
+`lastUpdated.date`, full re-fetch when the total count drops to catch deletions — ports directly.
+
+**A device type already carries its own binding.** `referencedRootNodeId` and
+`referencedNamespaceTable` record the root the device type was authored against. That is exactly
+the anchor `TranslateBrowsePathsToNodeIds` needs, so a device type is self-describing without a
+scan.
+
+## Correction to Revision 1
+
+Revision 1 listed value-based `applyConstraints` as unsupported without scanning. **That was
+wrong.** Reading `NodeMatcher` and the `removeDeviceTypesThatDoNotMatch*` methods shows most
+constraints never touch the address space:
+
+| Constraint | Needs a scan? | Mechanism |
+|---|---|---|
+| `matchesServerIds` | no | string comparison |
+| `serverHasNodeWithValues` | no | OPC UA Read / existence check of the explicit NodeIds in `MatchingNode` |
+| `matchesNodeIds` | no | comparison against `referencedRootNodeId` |
+| `serverObjectHasFragment` | no | one inventory GET, available through the proxy |
+| `browsePathMatchesRegex` | **yes** | needs a tree to match paths against |
+
+Only `browsePathMatchesRegex`, and regex inside a mapping entry's `browsePath`, genuinely require
+the scan. Compatibility with existing device types is therefore much broader than Revision 1
+claimed — a device type using literal browse paths and any non-regex constraint works as-is.
+
+## The trade-off to make consciously
+
+This re-adds a slice of the cloud integration that Revision 1 removed, and it partly gives up the
+cloud-agnostic property that revision highlighted: a gateway that fetches `c8y_OpcuaDeviceType`
+managed objects is coupled to Cumulocity and to the OPC UA UI's data model, where a gateway
+reading local TOML works behind any thin-edge bridge.
+
+The slice is small and bounded — read-only GETs, no credentials, no bootstrap, no SDK, roughly one
+request a minute, and no writes ever. It is nothing like the client Section 4 originally scoped.
+
+**Recommendation: support both sources behind one internal model**, with local files winning on
+conflict. The proxy path is the compatibility and migration story; the local-file path keeps the
+component usable behind a non-Cumulocity bridge. This is one trait with two implementations, not
+an abstraction built on speculation.
+
+**Keep readings on MQTT regardless.** Publishing measurements through the proxy — which the Java
+proxy mode does — would put the gateway back in charge of buffering, retry and backpressure
+against a remote endpoint. Over MQTT to localhost, mosquitto and the bridge own all of that.
+Use each transport for what it is good at: MQTT for the high-rate data path, HTTP for
+low-frequency configuration reads.
+
+## Required behaviour that follows
+
+- **Retry a proxy `401` once** after short backoff before treating it as an error. It is a
+  documented thin-edge quirk, not a credential problem — there are no credentials.
+- **A `502` must not stop OPC UA collection.** Keep running on the last known device types and
+  retry with backoff.
+- **Cache the last good device-type set on disk** so a restart during a cloud outage still comes
+  up mapped. This is the only thing worth persisting.
+- **Read the proxy address from `tedge config`** rather than hard-coding 8001.
+
+## Revised effort
+
+Adds roughly 2–3 weeks over Revision 1 for the proxy HTTP client, the `c8y_OpcuaDeviceType`
+deserialisation, the change-detection logic and the scan-free constraint evaluation.
+
+| Phase | Scope | Estimate |
+|---|---|---|
+| 1 | Config, connect, subscribe by NodeId, entity registration, health, measurements to `te/` | 3–4 weeks |
+| 2 | Device-type fetch through the proxy, conversion, constraint evaluation, browse-path resolution | 3–4 weeks |
+| 3 | Events, alarms incl. retained clear, UA event subscriptions with `EventFilter`, cyclic read, reconnect, local batching | 4–6 weeks |
+| 4 | Alarm-status expression subset, `opcua_read` / `opcua_write` / `opcua_call_method` commands, security policies and certs, deb/rpm + systemd, CI | 4–5 weeks |
+
+**≈ 3.5–4.5 months.** Still well below the original 4–7, and now with a real compatibility story
+rather than a clean break.
+
+## Still open
+
+**`async-opcua` is MPL-2.0 and remains the blocking risk** — file-level copyleft, needs
+third-party compliance clearance before code is written against it. Unchanged by any of this.
+
+**Authoring new device types still wants a scan somewhere.** Existing device types work, but the
+OPC UA UI builds `browsePath` arrays from a scanned tree. A tenant whose only gateway is this one
+can consume device types but cannot conveniently author new ones. Either accept that authoring
+happens against a Java gateway or by hand, or treat UI support for scan-free authoring as separate
+product work.

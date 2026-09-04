@@ -7,14 +7,17 @@ It connects to OPC UA servers, subscribes to or cyclically reads configured node
 mapping rules, and publishes to the local thin-edge MQTT broker on `te/` topics. thin-edge's
 mapper and bridge carry the data to the cloud.
 
-**No cloud integration of its own.** No Cumulocity REST client, no credentials, no inventory, no
-operations polling — thin-edge owns all of it. The only outbound socket besides OPC UA is MQTT to
-`localhost:1883`. Publishing only `te/` topics also makes the gateway cloud-agnostic: thin-edge
-2.0 configurable bridges can route the data anywhere.
+**No credentials of its own.** Data goes out over MQTT to `127.0.0.1:1883`; device types come in
+over read-only HTTP to the thin-edge Cumulocity proxy at `127.0.0.1:8001/c8y/...`, which injects
+the device's JWT. No bootstrap, no Cumulocity SDK, no operations polling, no inventory writes.
+
+**Compatible with existing device types.** `c8y_OpcuaDeviceType` managed objects authored in the
+OPC UA UI are fetched through the proxy and used as-is. Local TOML mappings are also supported for
+deployments behind a non-Cumulocity bridge.
 
 **No address space scanning.** Nodes are addressed by NodeId, or by browse path resolved against a
-configured root via `TranslateBrowsePathsToNodeIds`. Mappings are local configuration files, not
-cloud-managed device types.
+device type's `referencedRootNodeId` via `TranslateBrowsePathsToNodeIds`. Only regex browse paths
+and `browsePathMatchesRegex` are incompatible.
 
 This is not a replacement for the Java `opcua-device-gateway`.
 
